@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  planHeartbeatRunRecovery,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -139,5 +140,58 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("planHeartbeatRunRecovery", () => {
+  it("reaps only orphaned running runs and preserves queued runs for resumption", () => {
+    const now = new Date("2026-03-08T17:10:00.000Z");
+    const plan = planHeartbeatRunRecovery({
+      now,
+      staleThresholdMs: 5 * 60 * 1000,
+      runningProcessIds: ["running-live"],
+      runs: [
+        {
+          id: "queued-stuck",
+          agentId: "agent-a",
+          status: "queued",
+          updatedAt: new Date("2026-03-08T16:55:00.000Z"),
+        },
+        {
+          id: "running-live",
+          agentId: "agent-a",
+          status: "running",
+          updatedAt: new Date("2026-03-08T16:59:30.000Z"),
+        },
+        {
+          id: "running-orphaned",
+          agentId: "agent-b",
+          status: "running",
+          updatedAt: new Date("2026-03-08T17:00:00.000Z"),
+        },
+      ],
+    });
+
+    expect(plan.runsToReap.map((run) => run.id)).toEqual(["running-orphaned"]);
+    expect(plan.queuedAgentIds).toEqual(["agent-a"]);
+  });
+
+  it("does not reap fresh running runs inside the staleness window", () => {
+    const now = new Date("2026-03-08T17:10:00.000Z");
+    const plan = planHeartbeatRunRecovery({
+      now,
+      staleThresholdMs: 5 * 60 * 1000,
+      runs: [
+        {
+          id: "running-fresh",
+          agentId: "agent-a",
+          status: "running",
+          updatedAt: new Date("2026-03-08T17:08:00.000Z"),
+        },
+      ],
+    });
+
+    expect(plan.runsToReap).toEqual([]);
+    expect(plan.queuedAgentIds).toEqual([]);
   });
 });

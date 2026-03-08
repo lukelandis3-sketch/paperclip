@@ -41,6 +41,45 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
+type HeartbeatRunRecoveryCandidate = {
+  id: string;
+  agentId: string;
+  status: string;
+  updatedAt: Date | string | null;
+};
+
+export function planHeartbeatRunRecovery<T extends HeartbeatRunRecoveryCandidate>(input: {
+  runs: T[];
+  runningProcessIds?: Iterable<string>;
+  staleThresholdMs?: number;
+  now?: Date;
+}) {
+  const now = input.now ?? new Date();
+  const runningProcessIds = new Set(input.runningProcessIds ?? []);
+  const staleThresholdMs = input.staleThresholdMs ?? 0;
+  const runsToReap: T[] = [];
+  const queuedAgentIds = new Set<string>();
+
+  for (const run of input.runs) {
+    if (run.status === "queued") {
+      queuedAgentIds.add(run.agentId);
+      continue;
+    }
+    if (run.status !== "running") continue;
+    if (runningProcessIds.has(run.id)) continue;
+    if (staleThresholdMs > 0) {
+      const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+      if (now.getTime() - refTime < staleThresholdMs) continue;
+    }
+    runsToReap.push(run);
+  }
+
+  return {
+    runsToReap,
+    queuedAgentIds: Array.from(queuedAgentIds),
+  };
+}
+
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
   const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
   const run = previous.then(fn);
@@ -898,23 +937,20 @@ export function heartbeatService(db: Db) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    // Find all runs in "queued" or "running" state
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
       .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+    const recoveryPlan = planHeartbeatRunRecovery({
+      runs: activeRuns,
+      runningProcessIds: runningProcesses.keys(),
+      staleThresholdMs,
+      now,
+    });
 
     const reaped: string[] = [];
 
-    for (const run of activeRuns) {
-      if (runningProcesses.has(run.id)) continue;
-
-      // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
-      }
-
+    for (const run of recoveryPlan.runsToReap) {
       await setRunStatus(run.id, "failed", {
         error: "Process lost -- server may have restarted",
         errorCode: "process_lost",
@@ -938,6 +974,10 @@ export function heartbeatService(db: Db) {
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+    }
+
+    for (const agentId of recoveryPlan.queuedAgentIds) {
+      await startNextQueuedRunForAgent(agentId);
     }
 
     if (reaped.length > 0) {
