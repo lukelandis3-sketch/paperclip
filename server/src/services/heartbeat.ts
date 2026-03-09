@@ -153,6 +153,29 @@ export function shouldUseProjectWorkspaceForRun(input: {
   return !readNonEmptyString(input.configuredCwd);
 }
 
+function normalizeRuntimeAdapterConfigResolution(
+  resolved: Record<string, unknown> | { config: Record<string, unknown>; secretKeys?: Set<string> },
+) {
+  if (
+    typeof resolved === "object" &&
+    resolved !== null &&
+    "config" in resolved &&
+    typeof (resolved as { config?: unknown }).config === "object" &&
+    (resolved as { config?: unknown }).config !== null &&
+    !Array.isArray((resolved as { config?: unknown }).config)
+  ) {
+    const typed = resolved as { config: Record<string, unknown>; secretKeys?: Set<string> };
+    return {
+      config: typed.config,
+      secretKeys: typed.secretKeys instanceof Set ? typed.secretKeys : new Set<string>(),
+    };
+  }
+  return {
+    config: parseObject(resolved),
+    secretKeys: new Set<string>(),
+  };
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -1342,10 +1365,10 @@ export function heartbeatService(db: Db) {
       const mergedConfig = issueAssigneeOverrides?.adapterConfig
         ? { ...config, ...issueAssigneeOverrides.adapterConfig }
         : config;
-      const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
-        agent.companyId,
-        mergedConfig,
-      );
+      const { config: resolvedConfig, secretKeys } =
+        normalizeRuntimeAdapterConfigResolution(
+          await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, mergedConfig),
+        );
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
         if (meta.env && secretKeys.size > 0) {
           for (const key of secretKeys) {
