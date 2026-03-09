@@ -3,6 +3,7 @@ import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   planHeartbeatRunRecovery,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldUseProjectWorkspaceForRun,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -86,6 +87,44 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("shouldUseProjectWorkspaceForRun", () => {
+  it("prefers an agent's configured cwd by default", () => {
+    expect(
+      shouldUseProjectWorkspaceForRun({
+        configuredCwd: "/tmp/agent-worktree",
+        useProjectWorkspace: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("defaults to project workspace when no configured cwd exists", () => {
+    expect(
+      shouldUseProjectWorkspaceForRun({
+        configuredCwd: null,
+        useProjectWorkspace: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("honors an explicit project-workspace opt-in", () => {
+    expect(
+      shouldUseProjectWorkspaceForRun({
+        configuredCwd: "/tmp/agent-worktree",
+        useProjectWorkspace: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("honors an explicit project-workspace opt-out", () => {
+    expect(
+      shouldUseProjectWorkspaceForRun({
+        configuredCwd: null,
+        useProjectWorkspace: false,
+      }),
+    ).toBe(false);
   });
 });
 

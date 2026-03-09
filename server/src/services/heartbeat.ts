@@ -133,6 +133,26 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function resolveConfiguredWorkspaceCwd(input: {
+  agentAdapterConfig: unknown;
+  issueAdapterConfig?: Record<string, unknown> | null;
+}) {
+  const agentAdapterConfig = parseObject(input.agentAdapterConfig);
+  const effectiveAdapterConfig = input.issueAdapterConfig
+    ? { ...agentAdapterConfig, ...input.issueAdapterConfig }
+    : agentAdapterConfig;
+  return readNonEmptyString(effectiveAdapterConfig.cwd);
+}
+
+export function shouldUseProjectWorkspaceForRun(input: {
+  configuredCwd?: string | null;
+  useProjectWorkspace?: boolean | null;
+}) {
+  if (input.useProjectWorkspace === true) return true;
+  if (input.useProjectWorkspace === false) return false;
+  return !readNonEmptyString(input.configuredCwd);
+}
+
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -520,7 +540,10 @@ export function heartbeatService(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: {
+      adapterConfig?: Record<string, unknown> | null;
+      useProjectWorkspace?: boolean | null;
+    },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -532,8 +555,15 @@ export function heartbeatService(db: Db) {
           .then((rows) => rows[0]?.projectId ?? null)
       : null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
-    const useProjectWorkspace = opts?.useProjectWorkspace !== false;
-    const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
+    const configuredAgentCwd = resolveConfiguredWorkspaceCwd({
+      agentAdapterConfig: agent.adapterConfig,
+      issueAdapterConfig: opts?.adapterConfig ?? null,
+    });
+    const useProjectWorkspace = shouldUseProjectWorkspaceForRun({
+      configuredCwd: configuredAgentCwd,
+      useProjectWorkspace: opts?.useProjectWorkspace ?? null,
+    });
+    const workspaceProjectId = resolvedProjectId;
 
     const projectWorkspaceRows = workspaceProjectId
       ? await db
@@ -555,7 +585,7 @@ export function heartbeatService(db: Db) {
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
-    if (projectWorkspaceRows.length > 0) {
+    if (useProjectWorkspace && projectWorkspaceRows.length > 0) {
       const missingProjectCwds: string[] = [];
       let hasConfiguredProjectCwd = false;
       for (const workspace of projectWorkspaceRows) {
@@ -583,22 +613,38 @@ export function heartbeatService(db: Db) {
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
       if (missingProjectCwds.length > 0) {
         const firstMissing = missingProjectCwds[0];
         const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
         warnings.push(
           extraMissingCount > 0
-            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${fallbackCwd}" for this run.`
-            : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${fallbackCwd}" for this run.`,
+            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet.`
+            : `Project workspace path "${firstMissing}" is not available yet.`,
         );
       } else if (!hasConfiguredProjectCwd) {
         warnings.push(
-          `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
+          "Project workspace has no local cwd configured.",
         );
       }
+      if (configuredAgentCwd) {
+        return {
+          cwd: configuredAgentCwd,
+          source: "agent_home" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings: [
+            ...warnings,
+            `Using the agent's configured workspace "${configuredAgentCwd}" for this run.`,
+          ],
+        };
+      }
+
+      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      await fs.mkdir(fallbackCwd, { recursive: true });
       return {
         cwd: fallbackCwd,
         source: "project_primary" as const,
@@ -607,7 +653,20 @@ export function heartbeatService(db: Db) {
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
         repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
         workspaceHints,
-        warnings,
+        warnings: warnings.map((warning) => `${warning} Using fallback workspace "${fallbackCwd}" for this run.`),
+      };
+    }
+
+    if (configuredAgentCwd) {
+      return {
+        cwd: configuredAgentCwd,
+        source: "agent_home" as const,
+        projectId: resolvedProjectId,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        workspaceHints,
+        warnings: [],
       };
     }
 
@@ -1137,7 +1196,10 @@ export function heartbeatService(db: Db) {
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null },
+      {
+        adapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+        useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+      },
     );
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
