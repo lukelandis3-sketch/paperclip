@@ -51,6 +51,42 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+function buildWakePromptPrefix(input: {
+  taskId: string | null;
+  wakeReason: string | null;
+  wakeCommentId: string | null;
+  commentBody: string | null;
+}) {
+  const lines: string[] = [];
+  const hasCommentBody = typeof input.commentBody === "string" && input.commentBody.trim().length > 0;
+  const isCommentWake = input.wakeReason === "issue_commented" || input.wakeReason === "issue_comment_mentioned";
+  if (!input.taskId && !input.wakeReason && !input.wakeCommentId && !hasCommentBody) return "";
+
+  lines.push("## Wake Trigger");
+  if (input.taskId) lines.push(`- Task identifier: ${input.taskId}`);
+  if (input.wakeReason) lines.push(`- Wake reason: ${input.wakeReason}`);
+  if (input.wakeCommentId) lines.push(`- Trigger comment id: ${input.wakeCommentId}`);
+  lines.push("");
+
+  if (isCommentWake && input.taskId) {
+    lines.push("Mandatory first action for this wake:");
+    lines.push(`1. Run \`npx paperclipai issue get ${input.taskId}\` before any \`issue list\` command.`);
+    lines.push("2. Treat the trigger comment below as new context for this same issue.");
+    lines.push("3. If the issue is currently `blocked`, do not exit via blocked-task dedup until you have re-read the full comment thread.");
+    lines.push("");
+  }
+
+  if (hasCommentBody) {
+    lines.push("Trigger comment body:");
+    lines.push("```md");
+    lines.push(input.commentBody!.trim());
+    lines.push("```");
+    lines.push("");
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -157,6 +193,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
     (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
     null;
+  const wakeCommentBody =
+    typeof context.commentBody === "string" && context.commentBody.trim().length > 0
+      ? context.commentBody.trim()
+      : null;
   const approvalId =
     typeof context.approvalId === "string" && context.approvalId.trim().length > 0
       ? context.approvalId.trim()
@@ -278,7 +318,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  const wakePromptPrefix = buildWakePromptPrefix({
+    taskId: wakeTaskId,
+    wakeReason,
+    wakeCommentId,
+    commentBody: wakeCommentBody,
+  });
+  const prompt = `${instructionsPrefix}${wakePromptPrefix}${renderedPrompt}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["exec", "--json"];

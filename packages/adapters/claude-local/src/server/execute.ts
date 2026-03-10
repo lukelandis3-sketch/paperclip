@@ -78,6 +78,10 @@ interface ClaudeRuntimeConfig {
   workspaceId: string | null;
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
+  wakeTaskId: string | null;
+  wakeReason: string | null;
+  wakeCommentId: string | null;
+  wakeCommentBody: string | null;
   env: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
@@ -106,6 +110,42 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" {
   // Claude uses API-key auth when ANTHROPIC_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+function buildWakePromptPrefix(input: {
+  taskId: string | null;
+  wakeReason: string | null;
+  wakeCommentId: string | null;
+  commentBody: string | null;
+}) {
+  const lines: string[] = [];
+  const hasCommentBody = typeof input.commentBody === "string" && input.commentBody.trim().length > 0;
+  const isCommentWake = input.wakeReason === "issue_commented" || input.wakeReason === "issue_comment_mentioned";
+  if (!input.taskId && !input.wakeReason && !input.wakeCommentId && !hasCommentBody) return "";
+
+  lines.push("## Wake Trigger");
+  if (input.taskId) lines.push(`- Task identifier: ${input.taskId}`);
+  if (input.wakeReason) lines.push(`- Wake reason: ${input.wakeReason}`);
+  if (input.wakeCommentId) lines.push(`- Trigger comment id: ${input.wakeCommentId}`);
+  lines.push("");
+
+  if (isCommentWake && input.taskId) {
+    lines.push("Mandatory first action for this wake:");
+    lines.push(`1. Run \`npx paperclipai issue get ${input.taskId}\` before any \`issue list\` command.`);
+    lines.push("2. Treat the trigger comment below as new context for this same issue.");
+    lines.push("3. If the issue is currently `blocked`, do not exit via blocked-task dedup until you have re-read the full comment thread.");
+    lines.push("");
+  }
+
+  if (hasCommentBody) {
+    lines.push("Trigger comment body:");
+    lines.push("```md");
+    lines.push(input.commentBody!.trim());
+    lines.push("```");
+    lines.push("");
+  }
+
+  return `${lines.join("\n")}\n`;
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -147,6 +187,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
     (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
     null;
+  const wakeCommentBody =
+    typeof context.commentBody === "string" && context.commentBody.trim().length > 0
+      ? context.commentBody.trim()
+      : null;
   const approvalId =
     typeof context.approvalId === "string" && context.approvalId.trim().length > 0
       ? context.approvalId.trim()
@@ -221,6 +265,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
+    wakeTaskId,
+    wakeReason,
+    wakeCommentId,
+    wakeCommentBody,
     env,
     timeoutSec,
     graceSec,
@@ -298,6 +346,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
+    wakeTaskId,
+    wakeReason,
+    wakeCommentId,
+    wakeCommentBody,
     env,
     timeoutSec,
     graceSec,
@@ -340,6 +392,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
+  const wakePromptPrefix = buildWakePromptPrefix({
+    taskId: wakeTaskId,
+    wakeReason,
+    wakeCommentId,
+    commentBody: wakeCommentBody,
+  });
+  const finalPrompt = `${wakePromptPrefix}${prompt}`;
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
@@ -383,7 +442,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         commandArgs: args,
         commandNotes,
         env: redactEnvForLogs(env),
-        prompt,
+        prompt: finalPrompt,
         context,
       });
     }
@@ -391,7 +450,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runChildProcess(runId, command, args, {
       cwd,
       env,
-      stdin: prompt,
+      stdin: finalPrompt,
       timeoutSec,
       graceSec,
       onLog,
