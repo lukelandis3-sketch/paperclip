@@ -70,7 +70,7 @@ function buildWakePromptPrefix(input: {
 
   if (isCommentWake && input.taskId) {
     lines.push("Mandatory first action for this wake:");
-    lines.push(`1. Run \`npx paperclipai issue get ${input.taskId}\` before any \`issue list\` command.`);
+    lines.push(`1. Run \`npx paperclipai issue get ${input.taskId} --compact\` before any \`issue list\` command.`);
     lines.push("2. Treat the trigger comment below as new context for this same issue.");
     lines.push("3. If the issue is currently `blocked`, do not exit via blocked-task dedup until you have re-read the full comment thread.");
     lines.push("");

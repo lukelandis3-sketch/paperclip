@@ -6,11 +6,11 @@ describe("issue parent wake", () => {
     expect(
       resolveParentWakeOnChildStatusChange({
         childStatus: "done",
+        previousChildStatus: "in_review",
         statusChanged: true,
         parent: {
           id: "parent-1",
           assigneeAgentId: "eng-mgr",
-          createdByAgentId: "prog-dir",
         },
       }),
     ).toEqual({
@@ -19,15 +19,29 @@ describe("issue parent wake", () => {
     });
   });
 
-  it("falls back to the parent creator when there is no parent assignee", () => {
+  it("does nothing when the parent has no assignee", () => {
     expect(
       resolveParentWakeOnChildStatusChange({
         childStatus: "blocked",
+        previousChildStatus: "in_progress",
         statusChanged: true,
         parent: {
           id: "parent-1",
           assigneeAgentId: null,
-          createdByAgentId: "eng-mgr",
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("wakes the parent assignee when review returns a child to todo", () => {
+    expect(
+      resolveParentWakeOnChildStatusChange({
+        childStatus: "todo",
+        previousChildStatus: "in_review",
+        statusChanged: true,
+        parent: {
+          id: "parent-1",
+          assigneeAgentId: "eng-mgr",
         },
       }),
     ).toEqual({
@@ -40,11 +54,11 @@ describe("issue parent wake", () => {
     expect(
       resolveParentWakeOnChildStatusChange({
         childStatus: "in_review",
+        previousChildStatus: "in_progress",
         statusChanged: true,
         parent: {
           id: "parent-1",
           assigneeAgentId: "eng-mgr",
-          createdByAgentId: "prog-dir",
         },
       }),
     ).toBeNull();

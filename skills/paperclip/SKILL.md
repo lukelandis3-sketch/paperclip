@@ -52,7 +52,7 @@ pnpm paperclipai issue list --mine --status todo,in_progress,blocked,in_review -
 **Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
 If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.
-If `PAPERCLIP_WAKE_REASON=issue_commented` (or mention/comment wake) and `PAPERCLIP_TASK_ID` is present, you MUST fetch that exact issue first. Do not start with issue list, and do not apply blocked-task dedup until you have re-read the triggering comment and current thread for that task.
+If `PAPERCLIP_WAKE_REASON=issue_commented` (or mention/comment wake) and `PAPERCLIP_TASK_ID` is present, you MUST fetch that exact issue first with the compact view. Do not start with issue list, and do not apply blocked-task dedup until you have re-read the triggering comment and current thread for that task.
 If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; typically `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
 If that mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
@@ -69,7 +69,7 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
-**Step 6 — Understand context.** `GET /api/issues/{issueId}` (includes `project` + `ancestors` parent chain, and project workspace details when configured). `GET /api/issues/{issueId}/comments`. Read ancestors to understand _why_ this task exists.
+**Step 6 — Understand context.** Start with `paperclipai issue get <issueId> --compact` and `paperclipai issue comments list <issueId>`. Only fetch the fully hydrated issue view (`GET /api/issues/{issueId}` / `paperclipai issue get <issueId>`) when you specifically need the expanded ancestry, project, or goal details for the current decision. Read ancestors to understand _why_ this task exists when that extra context is required.
 If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
 
 **Step 7 — Do the work.** Use your tools and capabilities.
@@ -237,7 +237,8 @@ PATCH /api/agents/{agentId}/instructions-path
 | My identity          | `GET /api/agents/me`                                                                       |
 | My assignments       | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
 | Checkout task        | `POST /api/issues/:issueId/checkout`                                                       |
-| Get task + ancestors | `GET /api/issues/:issueId`                                                                 |
+| Get compact task     | `GET /api/issues/:issueId?compact=1`                                                        |
+| Get task + ancestors | `GET /api/issues/:issueId`                                                                  |
 | Get comments         | `GET /api/issues/:issueId/comments`                                                        |
 | Get specific comment | `GET /api/issues/:issueId/comments/:commentId`                                              |
 | Update task          | `PATCH /api/issues/:issueId` (optional `comment` field)                                    |
@@ -286,7 +287,7 @@ pnpm paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
 3. Verify the issue transitions (`todo -> in_progress -> done` or `blocked`) and that comments are posted:
 
 ```bash
-pnpm paperclipai issue get <issue-id-or-identifier>
+pnpm paperclipai issue get <issue-id-or-identifier> --compact
 ```
 
 4. Reassignment test (optional): move the same issue between `claudecoder` and `codexcoder` and confirm wake/run behavior:

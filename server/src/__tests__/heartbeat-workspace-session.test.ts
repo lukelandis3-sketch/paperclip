@@ -146,26 +146,48 @@ describe("shouldResetTaskSessionForWake", () => {
     ).toBe(true);
   });
 
-  it("does not reset session context on mention wake comment", () => {
+  it("does not reset session context on non-blocked mention wake comment", () => {
     expect(
       shouldResetTaskSessionForWake({
         wakeReason: "issue_comment_mentioned",
         wakeCommentId: "comment-1",
+        issueStatus: "in_progress",
       }),
     ).toBe(false);
   });
 
-  it("does not reset session context when commentId is present", () => {
+  it("does not reset session context when commentId is present on a non-blocked issue", () => {
     expect(
       shouldResetTaskSessionForWake({
         wakeReason: "issue_commented",
         commentId: "comment-2",
+        issueStatus: "in_progress",
       }),
     ).toBe(false);
   });
 
-  it("does not reset for comment wakes", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
+  it("does not reset for comment wakes on open issues", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented", issueStatus: "todo" })).toBe(false);
+  });
+
+  it("resets for blocked issue comment wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "issue_commented",
+        issueStatus: "blocked",
+        wakeCommentId: "comment-3",
+      }),
+    ).toBe(true);
+  });
+
+  it("resets for blocked mention wakes", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "issue_comment_mentioned",
+        issueStatus: "blocked",
+        wakeCommentId: "comment-4",
+      }),
+    ).toBe(true);
   });
 
   it("does not reset when wake reason is missing", () => {

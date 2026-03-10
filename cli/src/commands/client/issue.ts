@@ -58,6 +58,10 @@ interface IssueCommentOptions extends BaseClientOptions {
   reopen?: boolean;
 }
 
+interface IssueGetOptions extends BaseClientOptions {
+  compact?: boolean;
+}
+
 interface IssueCheckoutOptions extends BaseClientOptions {
   agentId: string;
   expectedStatuses?: string;
@@ -65,6 +69,7 @@ interface IssueCheckoutOptions extends BaseClientOptions {
 
 export function registerIssueCommands(program: Command): void {
   const issue = program.command("issue").description("Issue operations");
+  const issueComments = issue.command("comments").description("Read issue comments");
 
   addCommonClientOptions(
     issue
@@ -144,10 +149,15 @@ export function registerIssueCommands(program: Command): void {
       .command("get")
       .description("Get an issue by UUID or identifier (e.g. PC-12)")
       .argument("<idOrIdentifier>", "Issue ID or identifier")
-      .action(async (idOrIdentifier: string, opts: BaseClientOptions) => {
+      .option("--compact", "Fetch the compact issue view without hydrated ancestry/project/goal data")
+      .action(async (idOrIdentifier: string, opts: IssueGetOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Issue>(`/api/issues/${idOrIdentifier}`);
+          const row = await ctx.api.get<Issue>(buildIssueGetPath(idOrIdentifier, Boolean(opts.compact)));
+          if (opts.compact && !ctx.json) {
+            printOutput(toCompactIssueRecord(row));
+            return;
+          }
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
@@ -261,6 +271,47 @@ export function registerIssueCommands(program: Command): void {
   );
 
   addCommonClientOptions(
+    issueComments
+      .command("list")
+      .description("List comments for an issue")
+      .argument("<issueId>", "Issue ID")
+      .action(async (issueId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const comments = await ctx.api.get<IssueComment[]>(`/api/issues/${issueId}/comments`);
+          if (ctx.json) {
+            printOutput(comments, { json: true });
+            return;
+          }
+          printOutput(comments.map(toCompactIssueCommentRecord));
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    issueComments
+      .command("get")
+      .description("Get one issue comment")
+      .argument("<issueId>", "Issue ID")
+      .argument("<commentId>", "Comment ID")
+      .action(async (issueId: string, commentId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const comment = await ctx.api.get<IssueComment>(`/api/issues/${issueId}/comments/${commentId}`);
+          if (ctx.json) {
+            printOutput(comment, { json: true });
+            return;
+          }
+          printOutput(toCompactIssueCommentRecord(comment));
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
     issue
       .command("checkout")
       .description("Checkout issue for an agent")
@@ -321,6 +372,41 @@ function parseHiddenAt(value: string | undefined): string | null | undefined {
   if (value === undefined) return undefined;
   if (value.trim().toLowerCase() === "null") return null;
   return value;
+}
+
+export function buildIssueGetPath(idOrIdentifier: string, compact = false): string {
+  return `/api/issues/${idOrIdentifier}${compact ? "?compact=1" : ""}`;
+}
+
+export function toCompactIssueRecord(issue: Issue): Record<string, unknown> {
+  return {
+    identifier: issue.identifier,
+    id: issue.id,
+    status: issue.status,
+    priority: issue.priority,
+    title: issue.title,
+    projectId: issue.projectId,
+    goalId: issue.goalId,
+    parentId: issue.parentId,
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+    requestDepth: issue.requestDepth,
+    billingCode: issue.billingCode,
+    executionRunId: issue.executionRunId,
+    checkoutRunId: issue.checkoutRunId,
+    description: issue.description ?? null,
+  };
+}
+
+export function toCompactIssueCommentRecord(comment: IssueComment): Record<string, unknown> {
+  return {
+    id: comment.id,
+    authorAgentId: comment.authorAgentId,
+    authorUserId: comment.authorUserId,
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+    body: comment.body,
+  };
 }
 
 function filterIssueRows(rows: Issue[], match: string | undefined): Issue[] {

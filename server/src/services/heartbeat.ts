@@ -283,6 +283,14 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
 
+  const issueStatus = readNonEmptyString(contextSnapshot?.issueStatus);
+  if (
+    issueStatus === "blocked" &&
+    (wakeReason === "issue_commented" || wakeReason === "issue_comment_mentioned")
+  ) {
+    return true;
+  }
+
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
   if (wakeSource === "timer") return true;
 
@@ -295,6 +303,14 @@ function describeSessionResetReason(
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+
+  const issueStatus = readNonEmptyString(contextSnapshot?.issueStatus);
+  if (
+    issueStatus === "blocked" &&
+    (wakeReason === "issue_commented" || wakeReason === "issue_comment_mentioned")
+  ) {
+    return "this is a blocked issue comment wake";
+  }
 
   const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
   if (wakeSource === "timer") return "wake source is timer";

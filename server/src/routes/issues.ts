@@ -34,7 +34,10 @@ import {
 } from "./issue-create-guards.js";
 import { isAgentSelfReviewHandoff, isReviewerRejectReturn } from "./issue-handoff-guards.js";
 import { resolveParentWakeOnChildStatusChange } from "./issue-parent-wake.js";
-import { shouldWakeAssigneeOnIssueUpdateComment } from "./issue-update-comment-wakeup.js";
+import {
+  mergeIssueUpdateCommentIntoWakeup,
+  shouldWakeAssigneeOnIssueUpdateComment,
+} from "./issue-update-comment-wakeup.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -371,12 +374,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   router.get("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
+    const compact =
+      req.query.compact === "1" ||
+      req.query.compact === "true" ||
+      req.query.compact === "yes";
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (compact) {
+      res.json(issue);
+      return;
+    }
     const [ancestors, project, goal, mentionedProjectIds] = await Promise.all([
       svc.getAncestors(issue.id),
       issue.projectId ? projectsSvc.getById(issue.projectId) : null,
@@ -703,7 +714,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const parentIssue = issue.parentId ? await svc.getById(issue.parentId) : null;
 
       if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
-        wakeups.set(issue.assigneeAgentId, {
+        let assigneeWakeup: Parameters<typeof heartbeat.wakeup>[1] = {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
@@ -711,7 +722,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.update" },
-        });
+        };
+        if (
+          commentBody &&
+          comment &&
+          shouldWakeAssigneeOnIssueUpdateComment({
+            assigneeAgentId: issue.assigneeAgentId,
+            actorType: actor.actorType,
+            actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
+            issueStatus: issue.status,
+          })
+        ) {
+          assigneeWakeup = mergeIssueUpdateCommentIntoWakeup(assigneeWakeup, {
+            issueId: issue.id,
+            commentId: comment.id,
+            commentBody: comment.body,
+            issueStatus: issue.status,
+            source: "issue.update.assignment_comment",
+          });
+        }
+        wakeups.set(issue.assigneeAgentId, assigneeWakeup);
       }
 
       if (!assigneeChanged && statusChangedFromBacklog && issue.assigneeAgentId) {
@@ -755,6 +785,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
               commentId: comment.id,
               wakeCommentId: comment.id,
               commentBody: comment.body,
+              issueStatus: issue.status,
               source: "issue.update.comment",
               wakeReason: "issue_commented",
             },
@@ -784,6 +815,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
               commentId: comment.id,
               wakeCommentId: comment.id,
               commentBody: comment.body,
+              issueStatus: issue.status,
               wakeReason: "issue_comment_mentioned",
               source: "comment.mention",
             },
@@ -793,6 +825,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
       const parentWake = resolveParentWakeOnChildStatusChange({
         childStatus: issue.status,
+        previousChildStatus: existing.status,
         statusChanged,
         parent: parentIssue,
       });
@@ -1137,6 +1170,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
               commentId: comment.id,
               wakeCommentId: comment.id,
               commentBody: comment.body,
+              issueStatus: currentIssue.status,
               source: "issue.comment.reopen",
               wakeReason: "issue_reopened_via_comment",
               reopenedFrom: reopenFromStatus,
@@ -1163,6 +1197,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
               commentId: comment.id,
               wakeCommentId: comment.id,
               commentBody: comment.body,
+              issueStatus: currentIssue.status,
               source: "issue.comment",
               wakeReason: "issue_commented",
               ...(interruptedRunId ? { interruptedRunId } : {}),
@@ -1194,6 +1229,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
             commentId: comment.id,
             wakeCommentId: comment.id,
             commentBody: comment.body,
+            issueStatus: currentIssue.status,
             wakeReason: "issue_comment_mentioned",
             source: "comment.mention",
           },
