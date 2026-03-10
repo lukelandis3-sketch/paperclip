@@ -154,7 +154,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         .map((row) => row.entityId)
         .filter((value): value is string => value.length > 0);
       if (priorCreatedIssueIds.length > 0) {
-        const priorChild = await db
+        const priorChildren = await db
           .select({ id: issues.id })
           .from(issues)
           .where(
@@ -164,9 +164,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
               sql`${issues.parentId} IS NOT NULL`,
             ),
           )
-          .then((rows) => rows[0] ?? null);
-        if (priorChild) {
-          throw conflict("Manager agents may create at most one child ticket per run");
+          .then((rows) => rows.length);
+        if (priorChildren >= 2) {
+          throw conflict("Manager agents may create at most two child tickets per run");
         }
       }
     }
