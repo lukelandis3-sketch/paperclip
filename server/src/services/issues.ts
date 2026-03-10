@@ -20,6 +20,7 @@ import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { deriveIssueAssignmentAnomalies } from "./issue-assignment.js";
 import { resolveMentionedAgentIds } from "./issue-mentions.js";
+import { statusRequiresAssignee } from "./issue-status-policy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -698,8 +699,8 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
-      if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
+      if (statusRequiresAssignee(data.status) && !data.assigneeAgentId && !data.assigneeUserId) {
+        throw unprocessable(`${data.status} issues require an assignee`);
       }
       return db.transaction(async (tx) => {
         const [company] = await tx
@@ -759,8 +760,9 @@ export function issueService(db: Db) {
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
-        throw unprocessable("in_progress issues require an assignee");
+      const nextStatus = issueData.status ?? existing.status;
+      if (statusRequiresAssignee(nextStatus) && !nextAssigneeAgentId && !nextAssigneeUserId) {
+        throw unprocessable(`${nextStatus} issues require an assignee`);
       }
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);

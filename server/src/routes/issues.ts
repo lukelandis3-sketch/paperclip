@@ -32,7 +32,7 @@ import {
   isProcessControlTitle,
   normalizeIssueTitleFingerprint,
 } from "./issue-create-guards.js";
-import { isAgentSelfReviewHandoff } from "./issue-handoff-guards.js";
+import { isAgentSelfReviewHandoff, isReviewerRejectReturn } from "./issue-handoff-guards.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -563,6 +563,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       req.body.assigneeAgentId !== undefined ? req.body.assigneeAgentId : existing.assigneeAgentId;
     const nextAssigneeUserId =
       req.body.assigneeUserId !== undefined ? req.body.assigneeUserId : existing.assigneeUserId;
+    const actorAgent =
+      req.actor.type === "agent" && req.actor.agentId ? await agentsSvc.getById(req.actor.agentId) : null;
     const reviewHandoffTarget =
       req.actor.type === "agent" && nextAssigneeAgentId ? await agentsSvc.getById(nextAssigneeAgentId) : null;
     const isAgentSelfReviewHandoffAllowed = isAgentSelfReviewHandoff({
@@ -574,9 +576,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
       nextAssigneeUserId,
       targetAgent: reviewHandoffTarget,
     });
+    const isReviewerRejectReturnAllowed = isReviewerRejectReturn({
+      actorType: req.actor.type,
+      actorAgentId: req.actor.agentId ?? null,
+      existingStatus: existing.status,
+      existingAssigneeAgentId: existing.assigneeAgentId,
+      nextStatus,
+      nextAssigneeAgentId,
+      nextAssigneeUserId,
+      actorAgent,
+      targetAgent: reviewHandoffTarget,
+      creatorAgentId: existing.createdByAgentId,
+    });
 
     if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator && !isAgentSelfReviewHandoffAllowed) {
+      if (!isAgentReturningIssueToCreator && !isAgentSelfReviewHandoffAllowed && !isReviewerRejectReturnAllowed) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAgentSelfReviewHandoff } from "../routes/issue-handoff-guards.js";
+import { isAgentSelfReviewHandoff, isReviewerRejectReturn } from "../routes/issue-handoff-guards.js";
 
 describe("issue handoff guards", () => {
   it("allows an owning agent to move a ticket in_review to a qa reviewer", () => {
@@ -55,6 +55,60 @@ describe("issue handoff guards", () => {
           title: "Engineering Manager",
           role: "general",
         },
+      }),
+    ).toBe(false);
+  });
+
+  it("allows a reviewer to return a rejected ticket to the creating manager", () => {
+    expect(
+      isReviewerRejectReturn({
+        actorType: "agent",
+        actorAgentId: "reviewer",
+        existingStatus: "in_review",
+        existingAssigneeAgentId: "reviewer",
+        nextStatus: "todo",
+        nextAssigneeAgentId: "eng-mgr",
+        nextAssigneeUserId: null,
+        actorAgent: {
+          id: "reviewer",
+          name: "Reviewer",
+          title: "Reviewer / QA Lead",
+          role: "qa",
+        },
+        targetAgent: {
+          id: "eng-mgr",
+          name: "EngineeringManager",
+          title: "Engineering Manager",
+          role: "general",
+        },
+        creatorAgentId: "eng-mgr",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects reviewer return when the target is not the creating manager", () => {
+    expect(
+      isReviewerRejectReturn({
+        actorType: "agent",
+        actorAgentId: "reviewer",
+        existingStatus: "in_review",
+        existingAssigneeAgentId: "reviewer",
+        nextStatus: "todo",
+        nextAssigneeAgentId: "se-a",
+        nextAssigneeUserId: null,
+        actorAgent: {
+          id: "reviewer",
+          name: "Reviewer",
+          title: "Reviewer / QA Lead",
+          role: "qa",
+        },
+        targetAgent: {
+          id: "se-a",
+          name: "SoftwareEngineerA",
+          title: "Software Engineer A",
+          role: "engineer",
+        },
+        creatorAgentId: "eng-mgr",
       }),
     ).toBe(false);
   });
