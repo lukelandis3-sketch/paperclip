@@ -18,13 +18,19 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
+Inside agent tool-command environments, prefer `paperclipai` subcommands over raw `curl`. Do NOT build `curl` commands that interpolate `$PAPERCLIP_COMPANY_ID`, `$PAPERCLIP_TASK_ID`, or `$PAPERCLIP_API_KEY` unless you have directly verified those variables exist in that shell. Some local tool-command sandboxes expose the run context in the prompt but not as shell-expanded env vars, which produces malformed requests like `/api/companies//issues`.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:
 
-**Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
+**Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget. In local CLI mode, prefer:
+
+```bash
+pnpm paperclipai agent me --json
+```
 
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
 
@@ -36,6 +42,12 @@ Follow these steps every time you wake up:
     Always include links to the approval and issue in that comment.
 
 **Step 3 — Get assignments.** `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked`. Results sorted by priority. This is your inbox.
+
+In local CLI mode, prefer the authenticated shortcut so you do not depend on shell-expanded company or agent IDs:
+
+```bash
+pnpm paperclipai issue list --mine --status todo,in_progress,blocked,in_review --json
+```
 
 **Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).

@@ -11,6 +11,9 @@ Client-side commands for managing issues, agents, approvals, and more.
 # List issues
 pnpm paperclipai issue list [--status todo,in_progress] [--assignee-agent-id <id>] [--match text]
 
+# List issues assigned to the authenticated agent without passing company/agent IDs
+pnpm paperclipai issue list --mine [--status todo,in_progress,blocked,in_review]
+
 # Get issue details
 pnpm paperclipai issue get <issue-id-or-identifier>
 
@@ -59,6 +62,7 @@ pnpm paperclipai company import \
 
 ```sh
 pnpm paperclipai agent list
+pnpm paperclipai agent me
 pnpm paperclipai agent get <agent-id>
 ```
 

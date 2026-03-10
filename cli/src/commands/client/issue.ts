@@ -12,6 +12,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  resolveAuthenticatedAgentIdentity,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
@@ -21,6 +22,7 @@ interface IssueBaseOptions extends BaseClientOptions {
   assigneeAgentId?: string;
   projectId?: string;
   match?: string;
+  mine?: boolean;
 }
 
 interface IssueCreateOptions extends BaseClientOptions {
@@ -72,17 +74,38 @@ export function registerIssueCommands(program: Command): void {
       .option("--status <csv>", "Comma-separated statuses")
       .option("--assignee-agent-id <id>", "Filter by assignee agent ID")
       .option("--project-id <id>", "Filter by project ID")
+      .option("--mine", "Use the authenticated agent identity for company and assignee")
       .option("--match <text>", "Local text match on identifier/title/description")
       .action(async (opts: IssueBaseOptions) => {
         try {
-          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const ctx = resolveCommandContext(opts);
+          let companyId = ctx.companyId;
+          let assigneeAgentId = opts.assigneeAgentId;
+
+          if (opts.mine) {
+            const identity = await resolveAuthenticatedAgentIdentity(ctx.api);
+            if (!identity) {
+              throw new Error(
+                "Authenticated agent identity is required for --mine. Pass --api-key for an agent, or set context/company explicitly.",
+              );
+            }
+            companyId ||= identity.companyId;
+            assigneeAgentId ||= identity.id;
+          }
+
+          if (!companyId) {
+            throw new Error(
+              "Company ID is required. Pass --company-id, use --mine with an agent API key, set PAPERCLIP_COMPANY_ID, or set context profile companyId via `paperclipai context set`.",
+            );
+          }
+
           const params = new URLSearchParams();
           if (opts.status) params.set("status", opts.status);
-          if (opts.assigneeAgentId) params.set("assigneeAgentId", opts.assigneeAgentId);
+          if (assigneeAgentId) params.set("assigneeAgentId", assigneeAgentId);
           if (opts.projectId) params.set("projectId", opts.projectId);
 
           const query = params.toString();
-          const path = `/api/companies/${ctx.companyId}/issues${query ? `?${query}` : ""}`;
+          const path = `/api/companies/${companyId}/issues${query ? `?${query}` : ""}`;
           const rows = (await ctx.api.get<Issue[]>(path)) ?? [];
 
           const filtered = filterIssueRows(rows, opts.match);

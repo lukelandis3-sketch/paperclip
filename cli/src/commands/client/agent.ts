@@ -9,6 +9,7 @@ import {
   formatInlineRecord,
   handleCommandError,
   printOutput,
+  resolveAuthenticatedAgentIdentity,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
@@ -159,6 +160,24 @@ export function registerAgentCommands(program: Command): void {
         }
       }),
     { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    agent
+      .command("me")
+      .description("Get the authenticated agent identity")
+      .action(async (opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const row = await resolveAuthenticatedAgentIdentity(ctx.api);
+          if (!row) {
+            throw new Error("Agent authentication required.");
+          }
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
   );
 
   addCommonClientOptions(

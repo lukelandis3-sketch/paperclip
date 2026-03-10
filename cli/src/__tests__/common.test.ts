@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeContext } from "../client/context.js";
-import { resolveCommandContext } from "../commands/client/common.js";
+import { PaperclipApiClient } from "../client/http.js";
+import { resolveAuthenticatedAgentIdentity, resolveCommandContext } from "../commands/client/common.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -94,5 +95,40 @@ describe("resolveCommandContext", () => {
     expect(() =>
       resolveCommandContext({ context: contextPath, apiBase: "http://localhost:3100" }, { requireCompany: true }),
     ).toThrow(/Company ID is required/);
+  });
+
+  it("resolves authenticated agent identity from the API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "agent-1",
+          companyId: "company-1",
+          name: "EngineeringManager",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100", apiKey: "token-123" });
+    const identity = await resolveAuthenticatedAgentIdentity(client);
+
+    expect(identity).toEqual({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "EngineeringManager",
+    });
+  });
+
+  it("returns null when authenticated agent identity is unavailable", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "Agent authentication required" }), { status: 401 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+    const identity = await resolveAuthenticatedAgentIdentity(client);
+
+    expect(identity).toBeNull();
   });
 });

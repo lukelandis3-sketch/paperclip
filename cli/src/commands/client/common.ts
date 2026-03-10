@@ -23,6 +23,14 @@ export interface ResolvedClientContext {
   json: boolean;
 }
 
+export interface AuthenticatedAgentIdentity {
+  id: string;
+  companyId: string;
+  name?: string;
+  role?: string;
+  title?: string;
+}
+
 export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
   command
     .option("-c, --config <path>", "Path to Paperclip config file")
@@ -77,6 +85,21 @@ export function resolveCommandContext(
     profile,
     json: Boolean(options.json),
   };
+}
+
+export async function resolveAuthenticatedAgentIdentity(
+  api: PaperclipApiClient,
+): Promise<AuthenticatedAgentIdentity | null> {
+  try {
+    const identity = await api.get<AuthenticatedAgentIdentity>("/api/agents/me", { ignoreNotFound: true });
+    if (!identity?.id || !identity.companyId) return null;
+    return identity;
+  } catch (error) {
+    if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403 || error.status === 404)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export function printOutput(data: unknown, opts: { json?: boolean; label?: string } = {}): void {
