@@ -34,6 +34,7 @@ import {
 } from "./issue-create-guards.js";
 import { isAgentSelfReviewHandoff, isReviewerRejectReturn } from "./issue-handoff-guards.js";
 import { resolveParentWakeOnChildStatusChange } from "./issue-parent-wake.js";
+import { shouldWakeAssigneeOnIssueUpdateComment } from "./issue-update-comment-wakeup.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -726,6 +727,37 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
 
       if (commentBody && comment) {
+        if (
+          shouldWakeAssigneeOnIssueUpdateComment({
+            assigneeAgentId: issue.assigneeAgentId,
+            actorType: actor.actorType,
+            actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
+            issueStatus: issue.status,
+          }) &&
+          issue.assigneeAgentId &&
+          !wakeups.has(issue.assigneeAgentId)
+        ) {
+          wakeups.set(issue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            payload: {
+              issueId: issue.id,
+              commentId: comment.id,
+              mutation: "update_comment",
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              commentId: comment.id,
+              source: "issue.update.comment",
+              wakeReason: "issue_commented",
+            },
+          });
+        }
+
         let mentionedIds: string[] = [];
         try {
           mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
