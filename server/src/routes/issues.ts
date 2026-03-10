@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { activityLog, issues, type Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -23,8 +24,14 @@ import {
   projectService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  isEvergreenReviewControllerTitle,
+  isManagerLikeAgent,
+  isProcessControlTitle,
+  normalizeIssueTitleFingerprint,
+} from "./issue-create-guards.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -87,6 +94,75 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  async function assertAllowedAgentIssueCreation(
+    req: Request,
+    companyId: string,
+    input: { title: string; parentId?: string | null },
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return;
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent authentication required");
+    }
+
+    if (isProcessControlTitle(input.title) || isEvergreenReviewControllerTitle(input.title)) {
+      throw forbidden("Agent-created process/control tickets are disabled; route concrete work instead");
+    }
+
+    if (input.parentId) {
+      const openSiblings = await db
+        .select({ title: issues.title })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.parentId, input.parentId),
+            inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+            isNull(issues.hiddenAt),
+          ),
+        );
+      const fingerprint = normalizeIssueTitleFingerprint(input.title);
+      if (openSiblings.some((row) => normalizeIssueTitleFingerprint(row.title) === fingerprint)) {
+        throw conflict("Duplicate open child ticket under same parent");
+      }
+    }
+
+    if (input.parentId && req.actor.runId && (isManagerLikeAgent(actorAgent) || canCreateAgentsLegacy(actorAgent))) {
+      const priorCreatedRows = await db
+        .select({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.runId, req.actor.runId),
+            eq(activityLog.actorType, "agent"),
+            eq(activityLog.actorId, req.actor.agentId),
+            eq(activityLog.action, "issue.created"),
+            eq(activityLog.entityType, "issue"),
+          ),
+        );
+      const priorCreatedIssueIds = priorCreatedRows
+        .map((row) => row.entityId)
+        .filter((value): value is string => value.length > 0);
+      if (priorCreatedIssueIds.length > 0) {
+        const priorChild = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              inArray(issues.id, priorCreatedIssueIds),
+              eq(issues.createdByAgentId, req.actor.agentId),
+              sql`${issues.parentId} IS NOT NULL`,
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (priorChild) {
+          throw conflict("Manager agents may create at most one child ticket per run");
+        }
+      }
+    }
   }
 
   async function assertCanAssignTasks(req: Request, companyId: string) {
@@ -419,6 +495,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
+    await assertAllowedAgentIssueCreation(req, companyId, {
+      title: req.body.title,
+      parentId: req.body.parentId ?? null,
+    });
 
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {

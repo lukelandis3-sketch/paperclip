@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { deriveIssueAssignmentAnomalies } from "./issue-assignment.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -70,7 +71,19 @@ type IssueActiveRunRow = {
   createdAt: Date;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
-type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type IssueAgentSummary = {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  title: string | null;
+  icon: string | null;
+};
+type IssueWithLabelsAndAssignee = IssueWithLabels & {
+  assigneeAgent: IssueAgentSummary | null;
+  assignmentAnomalies: string[];
+};
+type IssueWithLabelsAndRun = IssueWithLabelsAndAssignee & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -249,11 +262,61 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   });
 }
 
+async function assigneeAgentMapForIssues(
+  dbOrTx: any,
+  issueRows: IssueWithLabels[],
+): Promise<Map<string, IssueAgentSummary>> {
+  const agentIds = [...new Set(
+    issueRows.map((row) => row.assigneeAgentId).filter((id): id is string => id != null),
+  )];
+  const map = new Map<string, IssueAgentSummary>();
+  if (agentIds.length === 0) return map;
+  const rows = await dbOrTx
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      status: agents.status,
+      title: agents.title,
+      icon: agents.icon,
+    })
+    .from(agents)
+    .where(inArray(agents.id, agentIds));
+  for (const row of rows) {
+    map.set(row.id, row);
+  }
+  return map;
+}
+
+async function withIssueAssignees(
+  dbOrTx: any,
+  rows: IssueWithLabels[],
+): Promise<IssueWithLabelsAndAssignee[]> {
+  const assigneeMap = await assigneeAgentMapForIssues(dbOrTx, rows);
+  return rows.map((row) => {
+    const assigneeAgent = row.assigneeAgentId ? (assigneeMap.get(row.assigneeAgentId) ?? null) : null;
+    return {
+      ...row,
+      assigneeAgent,
+      assignmentAnomalies: deriveIssueAssignmentAnomalies(
+        {
+          status: row.status,
+          assigneeAgentId: row.assigneeAgentId,
+          assigneeUserId: row.assigneeUserId,
+          executionRunId: row.executionRunId,
+          executionAgentNameKey: row.executionAgentNameKey,
+        },
+        assigneeAgent ? { id: assigneeAgent.id, status: assigneeAgent.status } : null,
+      ),
+    };
+  });
+}
+
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
 async function activeRunMapForIssues(
   dbOrTx: any,
-  issueRows: IssueWithLabels[],
+  issueRows: IssueWithLabelsAndAssignee[],
 ): Promise<Map<string, IssueActiveRunRow>> {
   const map = new Map<string, IssueActiveRunRow>();
   const runIds = issueRows
@@ -287,7 +350,7 @@ async function activeRunMapForIssues(
 }
 
 function withActiveRuns(
-  issueRows: IssueWithLabels[],
+  issueRows: IssueWithLabelsAndAssignee[],
   runMap: Map<string, IssueActiveRunRow>,
 ): IssueWithLabelsAndRun[] {
   return issueRows.map((row) => ({
@@ -496,8 +559,9 @@ export function issueService(db: Db) {
         .where(and(...conditions))
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      const withAssignees = await withIssueAssignees(db, withLabels);
+      const runMap = await activeRunMapForIssues(db, withAssignees);
+      const withRuns = withActiveRuns(withAssignees, runMap);
       if (!contextUserId || withRuns.length === 0) {
         return withRuns;
       }
@@ -602,7 +666,8 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
+      const [withLabels] = await withIssueLabels(db, [row]);
+      const [enriched] = await withIssueAssignees(db, [withLabels]);
       return enriched;
     },
 
@@ -613,7 +678,8 @@ export function issueService(db: Db) {
         .where(eq(issues.identifier, identifier.toUpperCase()))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
+      const [withLabels] = await withIssueLabels(db, [row]);
+      const [enriched] = await withIssueAssignees(db, [withLabels]);
       return enriched;
     },
 
@@ -659,7 +725,8 @@ export function issueService(db: Db) {
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
-        const [enriched] = await withIssueLabels(tx, [issue]);
+        const [withLabels] = await withIssueLabels(tx, [issue]);
+        const [enriched] = await withIssueAssignees(tx, [withLabels]);
         return enriched;
       });
     },
@@ -729,7 +796,8 @@ export function issueService(db: Db) {
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
-        const [enriched] = await withIssueLabels(tx, [updated]);
+        const [withLabels] = await withIssueLabels(tx, [updated]);
+        const [enriched] = await withIssueAssignees(tx, [withLabels]);
         return enriched;
       });
     },
@@ -754,7 +822,8 @@ export function issueService(db: Db) {
         }
 
         if (!removedIssue) return null;
-        const [enriched] = await withIssueLabels(tx, [removedIssue]);
+        const [withLabels] = await withIssueLabels(tx, [removedIssue]);
+        const [enriched] = await withIssueAssignees(tx, [withLabels]);
         return enriched;
       }),
 
@@ -800,7 +869,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
-        const [enriched] = await withIssueLabels(db, [updated]);
+        const [withLabels] = await withIssueLabels(db, [updated]);
+        const [enriched] = await withIssueAssignees(db, [withLabels]);
         return enriched;
       }
 
@@ -861,7 +931,8 @@ export function issueService(db: Db) {
         });
         if (adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
-          const [enriched] = await withIssueLabels(db, [row]);
+          const [withLabels] = await withIssueLabels(db, [row]);
+          const [enriched] = await withIssueAssignees(db, [withLabels]);
           return enriched;
         }
       }
@@ -873,7 +944,8 @@ export function issueService(db: Db) {
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
-        const [enriched] = await withIssueLabels(db, [row]);
+        const [withLabels] = await withIssueLabels(db, [row]);
+        const [enriched] = await withIssueAssignees(db, [withLabels]);
         return enriched;
       }
 
@@ -978,7 +1050,8 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
-      const [enriched] = await withIssueLabels(db, [updated]);
+      const [withLabels] = await withIssueLabels(db, [updated]);
+      const [enriched] = await withIssueAssignees(db, [withLabels]);
       return enriched;
     },
 
