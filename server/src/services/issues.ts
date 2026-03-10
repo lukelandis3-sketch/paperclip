@@ -19,6 +19,7 @@ import {
 import { extractProjectMentionIds } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { deriveIssueAssignmentAnomalies } from "./issue-assignment.js";
+import { resolveMentionedAgentIds } from "./issue-mentions.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
@@ -1284,14 +1285,9 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
-      const rows = await db.select({ id: agents.id, name: agents.name })
+      const rows = await db.select({ id: agents.id, name: agents.name, title: agents.title, status: agents.status })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      return resolveMentionedAgentIds(rows, body);
     },
 
     findMentionedProjectIds: async (issueId: string) => {
