@@ -33,6 +33,7 @@ import {
   normalizeIssueTitleFingerprint,
 } from "./issue-create-guards.js";
 import { isAgentSelfReviewHandoff, isReviewerRejectReturn } from "./issue-handoff-guards.js";
+import { resolveParentWakeOnChildStatusChange } from "./issue-parent-wake.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -687,6 +688,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const assigneeChanged = assigneeWillChange;
+    const statusChanged =
+      req.body.status !== undefined &&
+      existing.status !== issue.status;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
@@ -695,6 +699,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      const parentIssue = issue.parentId ? await svc.getById(issue.parentId) : null;
 
       if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
         wakeups.set(issue.assigneeAgentId, {
@@ -748,6 +753,35 @@ export function issueRoutes(db: Db, storage: StorageService) {
             },
           });
         }
+      }
+
+      const parentWake = resolveParentWakeOnChildStatusChange({
+        childStatus: issue.status,
+        statusChanged,
+        parent: parentIssue,
+      });
+      if (parentWake && !wakeups.has(parentWake.agentId)) {
+        wakeups.set(parentWake.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_child_status_changed",
+          payload: {
+            issueId: parentWake.parentIssueId,
+            childIssueId: issue.id,
+            childIssueStatus: issue.status,
+            mutation: "child_status_change",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: parentWake.parentIssueId,
+            taskId: parentWake.parentIssueId,
+            childIssueId: issue.id,
+            childIssueStatus: issue.status,
+            source: "issue.child_status_change",
+            wakeReason: "issue_child_status_changed",
+          },
+        });
       }
 
       for (const [agentId, wakeup] of wakeups.entries()) {
