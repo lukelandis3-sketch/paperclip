@@ -32,6 +32,7 @@ import {
   isProcessControlTitle,
   normalizeIssueTitleFingerprint,
 } from "./issue-create-guards.js";
+import { isAgentSelfReviewHandoff } from "./issue-handoff-guards.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -557,8 +558,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
       !!existing.createdByUserId &&
       req.body.assigneeUserId === existing.createdByUserId;
 
+    const nextStatus = req.body.status ?? existing.status;
+    const nextAssigneeAgentId =
+      req.body.assigneeAgentId !== undefined ? req.body.assigneeAgentId : existing.assigneeAgentId;
+    const nextAssigneeUserId =
+      req.body.assigneeUserId !== undefined ? req.body.assigneeUserId : existing.assigneeUserId;
+    const reviewHandoffTarget =
+      req.actor.type === "agent" && nextAssigneeAgentId ? await agentsSvc.getById(nextAssigneeAgentId) : null;
+    const isAgentSelfReviewHandoffAllowed = isAgentSelfReviewHandoff({
+      actorType: req.actor.type,
+      actorAgentId: req.actor.agentId ?? null,
+      existingAssigneeAgentId: existing.assigneeAgentId,
+      nextStatus,
+      nextAssigneeAgentId,
+      nextAssigneeUserId,
+      targetAgent: reviewHandoffTarget,
+    });
+
     if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
+      if (!isAgentReturningIssueToCreator && !isAgentSelfReviewHandoffAllowed) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
