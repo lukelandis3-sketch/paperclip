@@ -34,6 +34,7 @@ import {
 } from "./issue-create-guards.js";
 import { isAgentSelfReviewHandoff, isReviewerRejectReturn } from "./issue-handoff-guards.js";
 import { resolveParentWakeOnChildStatusChange } from "./issue-parent-wake.js";
+import { getEngineerReviewEvidenceFailure } from "./issue-review-evidence.js";
 import {
   mergeIssueUpdateCommentIntoWakeup,
   shouldWakeAssigneeOnIssueUpdateComment,
@@ -610,6 +611,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const engineerReviewEvidenceFailure = getEngineerReviewEvidenceFailure({
+      actorType: req.actor.type,
+      actorAgentId: req.actor.agentId ?? null,
+      actorAgent,
+      existingAssigneeAgentId: existing.assigneeAgentId,
+      nextStatus,
+      commentBody: typeof commentBody === "string" ? commentBody : null,
+    });
+    if (engineerReviewEvidenceFailure) {
+      throw new HttpError(422, engineerReviewEvidenceFailure, {
+        code: "engineer_review_evidence_required",
+      });
+    }
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
