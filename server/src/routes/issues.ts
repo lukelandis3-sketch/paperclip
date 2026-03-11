@@ -39,6 +39,7 @@ import {
   mergeIssueUpdateCommentIntoWakeup,
   shouldWakeAssigneeOnIssueUpdateComment,
 } from "./issue-update-comment-wakeup.js";
+import { getDirtyWorkspaceAssignmentFailure } from "./issue-workspace-guards.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 
 const MAX_ATTACHMENT_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -95,6 +96,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (actorAgent.role === "ceo" || Boolean(actorAgent.permissions?.canCreateAgents)) return true;
     res.status(403).json({ error: "Missing permission to link approvals" });
     return false;
+  }
+
+  async function assertTargetWorkspaceIsCleanForAssignment(
+    companyId: string,
+    assigneeAgentId: string | null | undefined,
+  ) {
+    if (!assigneeAgentId) return;
+    const targetAgent = await agentsSvc.getById(assigneeAgentId);
+    if (!targetAgent || targetAgent.companyId !== companyId) return;
+    const failure = getDirtyWorkspaceAssignmentFailure(targetAgent);
+    if (failure) {
+      throw conflict(failure);
+    }
   }
 
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
@@ -514,6 +528,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       title: req.body.title,
       parentId: req.body.parentId ?? null,
     });
+    if (req.body.assigneeAgentId && req.body.status !== "backlog") {
+      await assertTargetWorkspaceIsCleanForAssignment(companyId, req.body.assigneeAgentId);
+    }
 
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {
@@ -607,6 +624,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (!isAgentReturningIssueToCreator && !isAgentSelfReviewHandoffAllowed && !isReviewerRejectReturnAllowed) {
         await assertCanAssignTasks(req, existing.companyId);
       }
+    }
+    if (
+      nextAssigneeAgentId &&
+      ((assigneeWillChange && nextAssigneeAgentId !== existing.assigneeAgentId) ||
+        (existing.status === "backlog" && nextStatus !== "backlog"))
+    ) {
+      await assertTargetWorkspaceIsCleanForAssignment(existing.companyId, nextAssigneeAgentId);
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
