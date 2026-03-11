@@ -7,6 +7,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  activityLog,
   heartbeatRunEvents,
   heartbeatRuns,
   costEvents,
@@ -78,6 +79,27 @@ export function planHeartbeatRunRecovery<T extends HeartbeatRunRecoveryCandidate
     runsToReap,
     queuedAgentIds: Array.from(queuedAgentIds),
   };
+}
+
+export function deriveMissingIssueUpdateFailure(input: {
+  checkedOutIssue: {
+    status: string | null;
+    assigneeAgentId: string | null;
+    checkoutRunId: string | null;
+    executionRunId: string | null;
+  } | null;
+  agentId: string;
+  runId: string;
+  hasIssueUpdateActivity: boolean;
+}) {
+  const issue = input.checkedOutIssue;
+  if (!issue) return null;
+  if (issue.status !== "in_progress") return null;
+  if (issue.assigneeAgentId !== input.agentId) return null;
+  if (issue.checkoutRunId !== input.runId) return null;
+  if (issue.executionRunId !== input.runId) return null;
+  if (input.hasIssueUpdateActivity) return null;
+  return "Checked out issue run exited without any issue update or comment; treating as failed instead of silent success.";
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -1445,6 +1467,48 @@ export function heartbeatService(db: Db) {
         outcome = "failed";
       }
 
+      let derivedFailureMessage: string | null = null;
+      if (outcome === "succeeded") {
+        const checkedOutIssue = await db
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+            issueId: issues.id,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+          .then((rows) => rows[0] ?? null);
+
+        const hasIssueUpdateActivity = checkedOutIssue
+          ? await db
+              .select({ id: activityLog.id })
+              .from(activityLog)
+              .where(
+                and(
+                  eq(activityLog.companyId, run.companyId),
+                  eq(activityLog.runId, run.id),
+                  eq(activityLog.entityType, "issue"),
+                  eq(activityLog.entityId, checkedOutIssue.issueId),
+                  inArray(activityLog.action, ["issue.updated", "issue.comment_added"]),
+                ),
+              )
+              .limit(1)
+              .then((rows) => rows.length > 0)
+          : false;
+
+        derivedFailureMessage = deriveMissingIssueUpdateFailure({
+          checkedOutIssue,
+          agentId: agent.id,
+          runId: run.id,
+          hasIssueUpdateActivity,
+        });
+        if (derivedFailureMessage) {
+          outcome = "failed";
+        }
+      }
+
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
@@ -1473,14 +1537,16 @@ export function heartbeatService(db: Db) {
         error:
           outcome === "succeeded"
             ? null
-            : adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+            : derivedFailureMessage ??
+              adapterResult.errorMessage ??
+              (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
         errorCode:
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
+                ? (derivedFailureMessage ? "missing_issue_update_after_checkout" : (adapterResult.errorCode ?? "adapter_failed"))
                 : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,

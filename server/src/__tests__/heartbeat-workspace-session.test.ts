@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  deriveMissingIssueUpdateFailure,
   planHeartbeatRunRecovery,
   resolveRuntimeSessionParamsForWorkspace,
   shouldUseProjectWorkspaceForRun,
@@ -254,5 +255,55 @@ describe("planHeartbeatRunRecovery", () => {
 
     expect(plan.runsToReap).toEqual([]);
     expect(plan.queuedAgentIds).toEqual([]);
+  });
+});
+
+describe("deriveMissingIssueUpdateFailure", () => {
+  it("flags checked-out in-progress runs with no issue activity", () => {
+    expect(
+      deriveMissingIssueUpdateFailure({
+        checkedOutIssue: {
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-1",
+          executionRunId: "run-1",
+        },
+        agentId: "agent-1",
+        runId: "run-1",
+        hasIssueUpdateActivity: false,
+      }),
+    ).toContain("Checked out issue run exited without any issue update or comment");
+  });
+
+  it("does not flag runs that left an issue update or comment", () => {
+    expect(
+      deriveMissingIssueUpdateFailure({
+        checkedOutIssue: {
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-1",
+          executionRunId: "run-1",
+        },
+        agentId: "agent-1",
+        runId: "run-1",
+        hasIssueUpdateActivity: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not flag runs once the issue already left in-progress", () => {
+    expect(
+      deriveMissingIssueUpdateFailure({
+        checkedOutIssue: {
+          status: "in_review",
+          assigneeAgentId: "agent-1",
+          checkoutRunId: "run-1",
+          executionRunId: "run-1",
+        },
+        agentId: "agent-1",
+        runId: "run-1",
+        hasIssueUpdateActivity: false,
+      }),
+    ).toBeNull();
   });
 });
